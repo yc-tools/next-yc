@@ -1,0 +1,67 @@
+versions:
+  - range: ">=12.0.0 <13.0.0"
+    label: "Next.js 12"
+    features:
+      pagesRouter: supported
+      appRouter: unsupported
+      isr: supported
+      middleware: partial
+      serverActions: unsupported
+      imageOptimization: supported
+      apiRoutes: supported
+
+  - range: ">=13.0.0 <14.0.0"
+    label: "Next.js 13"
+    features:
+      pagesRouter: supported
+      appRouter: supported
+      isr: supported
+      middleware: supported
+      serverActions: experimental
+      imageOptimization: supported
+      apiRoutes: supported
+
+  - range: ">=14.0.0 <15.0.0"
+    label: "Next.js 14"
+    features:
+      pagesRouter: supported
+      appRouter: supported
+      isr: supported
+      middleware: supported
+      serverActions: supported
+      imageOptimization: supported
+      apiRoutes: supported
+
+  - range: ">=15.0.0 <16.0.0"
+    label: "Next.js 15"
+    features:
+      pagesRouter: supported
+      appRouter: supported
+      isr: supported
+      middleware: supported
+      serverActions: supported
+      imageOptimization: supported
+      apiRoutes: supported
+
+  - range: ">=16.0.0"
+    label: "Next.js 16+"
+    features:
+      pagesRouter: supported
+      appRouter: supported
+      isr: supported
+      middleware: supported
+      serverActions: supported
+      imageOptimization: supported
+      apiRoutes: supported
+
+yandexCloudLimitations:
+  apiGatewayPayload: "10 MB max"
+  functionExecution: "10 min max"
+  functionMemory: "8 GB max"
+  coldStart: "100-500ms typical"
+
+runtimeNotes:
+  - "Next.js SSR runs in Node.js Cloud Functions via standalone mode"
+  - "ISR cache uses Object Storage + YDB for distributed metadata"
+  - "Middleware is emulated in Node.js (not true edge runtime)"
+  - "Image optimization uses Sharp in a separate Cloud Function"

@@ -92,19 +92,14 @@ jobs:
           echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "Selected release version: $NEXT_VERSION"
 
-      - name: Publish @yc-tools/next-yc
+      - name: Bump package versions
         if: steps.changes.outputs.should_release == 'true'
         run: |
           VERSION=${{ steps.version.outputs.version }}
-          PACKAGE_NAME="@yc-tools/next-yc"
-          if npm view "$PACKAGE_NAME@$VERSION" version --registry=https://registry.npmjs.org > /dev/null 2>&1; then
-            echo "$PACKAGE_NAME@$VERSION already exists in npm, skipping publish"
-          else
-            cd packages/next-yc
-            npm version "$VERSION" --no-git-tag-version --allow-same-version
-            npm publish --access public --tag latest --provenance
-            cd ../..
-          fi
+          # Bump BOTH packages before publishing either so pnpm publish rewrites
+          # the workspace:* dependency to a version that actually gets published.
+          pnpm --filter @yc-tools/next-yc-runtime exec npm version "$VERSION" --no-git-tag-version --allow-same-version
+          pnpm --filter @yc-tools/next-yc exec npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Publish @yc-tools/next-yc-runtime
         if: steps.changes.outputs.should_release == 'true'
@@ -114,10 +109,22 @@ jobs:
           if npm view "$PACKAGE_NAME@$VERSION" version --registry=https://registry.npmjs.org > /dev/null 2>&1; then
             echo "$PACKAGE_NAME@$VERSION already exists in npm, skipping publish"
           else
-            cd packages/next-yc-runtime
-            npm version "$VERSION" --no-git-tag-version --allow-same-version
-            npm publish --access public --tag latest --provenance
-            cd ../..
+            # pnpm publish rewrites the `workspace:*` protocol to concrete versions
+            # so the published tarball is installable with plain `npm install`.
+            pnpm --filter @yc-tools/next-yc-runtime publish --access public --tag latest --no-git-checks --provenance
+          fi
+
+      - name: Publish @yc-tools/next-yc
+        if: steps.changes.outputs.should_release == 'true'
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          PACKAGE_NAME="@yc-tools/next-yc"
+          if npm view "$PACKAGE_NAME@$VERSION" version --registry=https://registry.npmjs.org > /dev/null 2>&1; then
+            echo "$PACKAGE_NAME@$VERSION already exists in npm, skipping publish"
+          else
+            # pnpm publish rewrites the `workspace:*` protocol to concrete versions
+            # so the published tarball is installable with plain `npm install`.
+            pnpm --filter @yc-tools/next-yc publish --access public --tag latest --no-git-checks --provenance
           fi
 
       - name: Create GitHub Release

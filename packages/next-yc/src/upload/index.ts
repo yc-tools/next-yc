@@ -1,4 +1,4 @@
-import { S3Client, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { S3Client } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import fs from 'fs-extra';
 import path from 'path';
@@ -11,12 +11,16 @@ export interface UploadOptions {
   assetsBucket: string;
   region?: string;
   endpoint?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
   verbose?: boolean;
   dryRun?: boolean;
 }
 
+const UPLOAD_CONCURRENCY = 8;
+
 export class Uploader {
-  private s3Client!: S3Client;
+  constructor(private s3Client?: S3Client) {}
 
   async upload(options: UploadOptions): Promise<void> {
     const spinner = ora();
@@ -25,14 +29,30 @@ export class Uploader {
       assetsBucket,
       region = 'ru-central1',
       endpoint = 'https://storage.yandexcloud.net',
+      accessKeyId,
+      secretAccessKey,
       verbose,
       dryRun,
     } = options;
 
-    this.s3Client = new S3Client({
-      region,
-      endpoint,
-    });
+    if (!this.s3Client && !dryRun) {
+      if (!accessKeyId || !secretAccessKey) {
+        throw new Error(
+          'Object Storage credentials are required for upload. Set NYC_STORAGE_ACCESS_KEY/' +
+            'NYC_STORAGE_SECRET_KEY (or YC_ACCESS_KEY/YC_SECRET_KEY, or AWS_ACCESS_KEY_ID/' +
+            'AWS_SECRET_ACCESS_KEY), or config "storageAccessKey"/"storageSecretKey".',
+        );
+      }
+
+      this.s3Client = new S3Client({
+        region,
+        endpoint,
+        credentials: {
+          accessKeyId,
+          secretAccessKey,
+        },
+      });
+    }
 
     try {
       if (!(await fs.pathExists(buildDir))) {
@@ -43,7 +63,11 @@ export class Uploader {
       const assetsDir = path.join(buildDir, 'artifacts', 'assets');
       if (await fs.pathExists(assetsDir)) {
         const uploaded = await this.uploadDirectory(assetsDir, assetsBucket, '', dryRun, verbose);
-        spinner.succeed(`Uploaded ${uploaded.length} asset files`);
+        spinner.succeed(
+          dryRun
+            ? `Would upload ${uploaded.length} asset files`
+            : `Uploaded ${uploaded.length} asset files`,
+        );
       } else {
         spinner.warn('No static assets found');
       }
@@ -60,7 +84,7 @@ export class Uploader {
           if (!dryRun) {
             await this.uploadFile(zipPath, assetsBucket, key);
           }
-          spinner.succeed(`Uploaded ${file}`);
+          spinner.succeed(dryRun ? `Would upload ${file}` : `Uploaded ${file}`);
           if (verbose) {
             console.log(chalk.gray(`  -> s3://${assetsBucket}/${key}`));
           }
@@ -73,7 +97,9 @@ export class Uploader {
         if (!dryRun) {
           await this.uploadFile(manifestPath, assetsBucket, 'manifest.json');
         }
-        spinner.succeed('Uploaded deployment manifest');
+        spinner.succeed(
+          dryRun ? 'Would upload deployment manifest' : 'Uploaded deployment manifest',
+        );
       }
 
       if (dryRun) {
@@ -101,20 +127,30 @@ export class Uploader {
     });
 
     const uploaded: string[] = [];
+    let nextIndex = 0;
 
-    for (const file of files) {
-      const localPath = path.join(localDir, file);
-      const s3Key = s3Prefix ? `${s3Prefix}/${file}` : file;
+    const worker = async (): Promise<void> => {
+      while (nextIndex < files.length) {
+        const file = files[nextIndex++];
+        const localPath = path.join(localDir, file);
+        const s3Key = s3Prefix ? `${s3Prefix}/${file}` : file;
 
-      if (!dryRun) {
-        await this.uploadFile(localPath, bucket, s3Key);
+        if (!dryRun) {
+          await this.uploadFile(localPath, bucket, s3Key);
+        }
+
+        uploaded.push(s3Key);
+        if (verbose) {
+          console.log(chalk.gray(dryRun ? `  Would upload: ${file}` : `  Uploaded: ${file}`));
+        }
       }
+    };
 
-      uploaded.push(s3Key);
-      if (verbose) {
-        console.log(chalk.gray(`  Uploaded: ${file}`));
-      }
-    }
+    const workers = Array.from(
+      { length: Math.min(UPLOAD_CONCURRENCY, files.length) },
+      () => worker(),
+    );
+    await Promise.all(workers);
 
     return uploaded;
   }
@@ -155,7 +191,7 @@ export class Uploader {
     }
 
     const upload = new Upload({
-      client: this.s3Client,
+      client: this.s3Client!,
       params: {
         Bucket: bucket,
         Key: key,
@@ -170,22 +206,7 @@ export class Uploader {
       partSize: 5 * 1024 * 1024,
     });
 
-    upload.on('httpUploadProgress', () => {
-      // No-op: optionally exposed for future progress reporting.
-    });
-
     await upload.done();
-  }
-
-  async listObjects(bucket: string, prefix: string): Promise<string[]> {
-    const response = await this.s3Client.send(
-      new ListObjectsV2Command({
-        Bucket: bucket,
-        Prefix: prefix,
-      }),
-    );
-
-    return (response.Contents || []).map((obj) => obj.Key || '').filter(Boolean);
   }
 
   private isImmutableAsset(key: string): boolean {

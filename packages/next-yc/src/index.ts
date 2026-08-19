@@ -507,7 +507,18 @@ program
             ),
           },
         );
-        await terraform.init(backend || undefined);
+
+        if (!backend) {
+          throw new Error(
+            'A remote terraform state backend is required for deploy: without it the ' +
+              'state would be written to a temporary directory and deleted afterwards, ' +
+              'orphaning the created infrastructure. Provide --state-bucket and --state-key ' +
+              '(or NYC_STATE_BUCKET/NYC_STATE_KEY, TF_STATE_BUCKET/TF_STATE_KEY, or config ' +
+              '"stateBucket"/"stateKey").',
+          );
+        }
+
+        await terraform.init(backend);
 
         await builder.build({
           projectPath,

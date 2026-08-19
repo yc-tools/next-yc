@@ -35,22 +35,22 @@ output "cdn_domain" {
 
 output "server_function_id" {
   description = "Server function ID"
-  value       = local.manifest.capabilities.rendering.needsServer ? yandex_function.server[0].id : null
+  value       = local.manifest.capabilities.needsServer ? yandex_function.server[0].id : null
 }
 
 output "server_function_version" {
   description = "Server function version ID"
-  value       = local.manifest.capabilities.rendering.needsServer ? yandex_function.server[0].version : null
+  value       = local.manifest.capabilities.needsServer ? yandex_function.server[0].version : null
 }
 
 output "image_function_id" {
   description = "Image function ID"
-  value       = local.manifest.capabilities.assets.needsImage ? yandex_function.image[0].id : null
+  value       = local.manifest.capabilities.needsImage ? yandex_function.image[0].id : null
 }
 
 output "image_function_version" {
   description = "Image function version ID"
-  value       = local.manifest.capabilities.assets.needsImage ? yandex_function.image[0].version : null
+  value       = local.manifest.capabilities.needsImage ? yandex_function.image[0].version : null
 }
 
 output "ydb_endpoint" {

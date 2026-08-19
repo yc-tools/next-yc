@@ -26,6 +26,9 @@ const JPEG = 'image/jpeg';
 const GIF = 'image/gif';
 const SVG = 'image/svg+xml';
 const ICO = 'image/x-icon';
+
+const MAX_WIDTH = 3840;
+const MAX_REMOTE_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let sharpFactory: ((input: Buffer) => any) | undefined;
 
@@ -60,12 +63,35 @@ export function createImageHandler(options: ImageHandlerOptions = {}) {
         };
       }
 
-      const width = params.w ? Number.parseInt(params.w, 10) : undefined;
-      if (width && (width < 1 || width > 4000)) {
+      let width: number | undefined;
+      if (params.w !== undefined) {
+        width = Number.parseInt(params.w, 10);
+        if (!Number.isInteger(width) || width < 1 || width > MAX_WIDTH) {
+          return {
+            statusCode: 400,
+            headers: { 'content-type': 'text/plain' },
+            body: 'Invalid width parameter',
+          };
+        }
+      }
+
+      let requestedQuality: number | undefined;
+      if (params.q !== undefined) {
+        requestedQuality = Number.parseInt(params.q, 10);
+        if (!Number.isInteger(requestedQuality) || requestedQuality < 1 || requestedQuality > 100) {
+          return {
+            statusCode: 400,
+            headers: { 'content-type': 'text/plain' },
+            body: 'Invalid quality parameter',
+          };
+        }
+      }
+
+      if (isRemoteUrl(params.url) && !isAllowedRemoteUrl(params.url)) {
         return {
-          statusCode: 400,
+          statusCode: 403,
           headers: { 'content-type': 'text/plain' },
-          body: 'Invalid width parameter',
+          body: 'Remote image host not allowed',
         };
       }
 
@@ -88,12 +114,16 @@ export function createImageHandler(options: ImageHandlerOptions = {}) {
         };
       }
 
-      const format = detectFormat(sourceImage.contentType, accept, formats);
-      const processed = await processImage(sourceImage.buffer, {
-        width,
-        quality: params.q ? Number.parseInt(params.q, 10) : quality,
-        format,
-      });
+      // SVG and ICO are not raster formats sharp should transcode — pass the
+      // original bytes through with their real content type.
+      const passthrough = sourceImage.contentType === SVG || sourceImage.contentType === ICO;
+      const processed = passthrough
+        ? { buffer: sourceImage.buffer, format: sourceImage.contentType }
+        : await processImage(sourceImage.buffer, {
+            width,
+            quality: requestedQuality ?? quality,
+            format: detectFormat(sourceImage.contentType, accept, formats),
+          });
 
       const response: APIGatewayProxyResultV2 = {
         statusCode: 200,
@@ -170,8 +200,8 @@ async function getFromCache(
       isBase64Encoded: true,
     };
   } catch (error) {
-    const err = error as { Code?: string };
-    if (err.Code !== 'NoSuchKey') {
+    const err = error as { name?: string };
+    if (err.name !== 'NoSuchKey') {
       console.error('[Image] Cache read error:', error);
     }
     return null;
@@ -224,14 +254,25 @@ async function fetchSourceImage(
       };
     }
 
-    if (url.startsWith('http://') || url.startsWith('https://')) {
+    if (isRemoteUrl(url)) {
       const response = await fetch(url);
 
       if (!response.ok) {
         return null;
       }
 
+      const contentLength = Number.parseInt(response.headers.get('content-length') || '', 10);
+      if (Number.isInteger(contentLength) && contentLength > MAX_REMOTE_IMAGE_BYTES) {
+        console.error(`[Image] Remote image exceeds size limit: ${contentLength} bytes`);
+        return null;
+      }
+
       const buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.length > MAX_REMOTE_IMAGE_BYTES) {
+        console.error(`[Image] Remote image exceeds size limit: ${buffer.length} bytes`);
+        return null;
+      }
+
       const contentType = response.headers.get('content-type') || JPEG;
 
       return { buffer, contentType };
@@ -244,7 +285,89 @@ async function fetchSourceImage(
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isRemoteUrl(url: string): boolean {
+  return url.startsWith('http://') || url.startsWith('https://');
+}
+
+/**
+ * A remote URL is only allowed when its host matches the NYC_IMAGE_ALLOWED_HOSTS
+ * allowlist (comma-separated; a leading dot allows any subdomain, e.g.
+ * ".example.com" matches "cdn.example.com"). Hosts in private, link-local, or
+ * cloud-metadata IP ranges are always rejected to prevent SSRF (e.g. stealing
+ * IAM tokens from the 169.254.169.254 metadata endpoint).
+ */
+function isAllowedRemoteUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+
+  if (isBlockedHost(hostname)) {
+    console.error(`[Image] Blocked private/metadata host: ${hostname}`);
+    return false;
+  }
+
+  const allowlist = (process.env.NYC_IMAGE_ALLOWED_HOSTS || '')
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry.length > 0);
+
+  if (allowlist.length === 0) {
+    console.error(
+      '[Image] Remote image URLs are disabled: set NYC_IMAGE_ALLOWED_HOSTS to a ' +
+        'comma-separated list of allowed hosts to enable them.',
+    );
+    return false;
+  }
+
+  return allowlist.some((entry) =>
+    entry.startsWith('.')
+      ? hostname.endsWith(entry) || hostname === entry.slice(1)
+      : hostname === entry,
+  );
+}
+
+function isBlockedHost(hostname: string): boolean {
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
+    return true;
+  }
+
+  // IPv6 (URL hostname strips the surrounding brackets)
+  const bareHost = hostname.replace(/^\[|\]$/g, '');
+  if (bareHost.includes(':')) {
+    const lower = bareHost.toLowerCase();
+    return (
+      lower === '::' ||
+      lower === '::1' ||
+      lower.startsWith('fe80:') || // link-local
+      lower.startsWith('fc') || // unique-local fc00::/7
+      lower.startsWith('fd') ||
+      lower.startsWith('::ffff:') // IPv4-mapped
+    );
+  }
+
+  // IPv4 literal
+  const octets = bareHost.split('.');
+  if (octets.length === 4 && octets.every((o) => /^\d{1,3}$/.test(o))) {
+    const [a, b] = octets.map(Number);
+    return (
+      a === 0 || // "this" network
+      a === 10 || // private
+      a === 127 || // loopback
+      (a === 100 && b >= 64 && b <= 127) || // carrier-grade NAT
+      (a === 169 && b === 254) || // link-local / cloud metadata
+      (a === 172 && b >= 16 && b <= 31) || // private
+      (a === 192 && b === 168) // private
+    );
+  }
+
+  return false;
+}
+
 async function processImage(
   input: Buffer,
   options: {

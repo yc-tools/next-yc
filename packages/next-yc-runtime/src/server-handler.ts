@@ -74,7 +74,7 @@ export function createServerHandler(options: HandlerOptions) {
 
   const initialize = async (): Promise<void> => {
     if (nodeHandler) {
-      console.log('[Server] Already initialized, skipping');
+      if (debug) console.log('[Server] Already initialized, skipping');
       return;
     }
 
@@ -131,23 +131,25 @@ export function createServerHandler(options: HandlerOptions) {
     const qs = event.rawQueryString ? `?${event.rawQueryString}` : '';
     const requestId = event.requestContext?.requestId || 'unknown';
 
-    console.log(`[Server] --> ${method} ${urlPath}${qs} (reqId: ${requestId})`);
-    if (debug) console.log(`[Server] Headers: ${JSON.stringify(event.headers)}`);
+    if (debug) {
+      console.log(`[Server] --> ${method} ${urlPath}${qs} (reqId: ${requestId})`);
+      console.log(`[Server] Headers: ${JSON.stringify(event.headers)}`);
+    }
 
     try {
       await initialize();
-      console.log(`[Server] Initialized (+${Date.now() - startTime}ms)`);
+      if (debug) console.log(`[Server] Initialized (+${Date.now() - startTime}ms)`);
 
       if (nodeHandler) {
-        console.log(`[Server] Routing to Node handler`);
-        const result = await handleViaNode(nodeHandler, event, trustProxy);
+        if (debug) console.log(`[Server] Routing to Node handler`);
+        const result = await handleViaNode(nodeHandler, event, trustProxy, debug);
         console.log(
-          `[Server] <-- ${result.statusCode} ${method} ${urlPath} (body: ${result.body?.length ?? 0} bytes, +${Date.now() - startTime}ms)`,
+          `[Server] ${result.statusCode} ${method} ${urlPath}${qs} (reqId: ${requestId}, body: ${result.body?.length ?? 0} bytes, +${Date.now() - startTime}ms)`,
         );
         return result;
       }
 
-      console.log(`[Server] <-- 404 ${method} ${urlPath} (no handler matched)`);
+      console.log(`[Server] 404 ${method} ${urlPath} (no handler matched)`);
       return {
         statusCode: 404,
         headers: { 'content-type': 'text/plain' },
@@ -177,11 +179,14 @@ function handleViaNode(
   handler: NodeRequestHandler,
   event: APIGatewayProxyEventV2,
   trustProxy: boolean,
+  debug: boolean,
 ): Promise<APIGatewayProxyResultV2> {
   const nodeStart = Date.now();
-  console.log(
-    `[Server:Node] Starting handler for ${event.requestContext.http.method} ${event.rawPath}`,
-  );
+  if (debug) {
+    console.log(
+      `[Server:Node] Starting handler for ${event.requestContext.http.method} ${event.rawPath}`,
+    );
+  }
 
   return new Promise((resolve, reject) => {
     const req = new IncomingMessage(null as never);
@@ -214,7 +219,7 @@ function handleViaNode(
     const origWriteHead = res.writeHead.bind(res);
     res.writeHead = function (code: number, ...args: unknown[]) {
       statusCode = code;
-      console.log(`[Server:Node] writeHead(${code}) (+${Date.now() - nodeStart}ms)`);
+      if (debug) console.log(`[Server:Node] writeHead(${code}) (+${Date.now() - nodeStart}ms)`);
       return origWriteHead(code, ...(args as []));
     };
 
@@ -233,7 +238,9 @@ function handleViaNode(
       if (chunk) {
         const buf = toBuffer(chunk);
         chunks.push(buf);
-        console.log(`[Server:Node] write(${buf.length} bytes) (+${Date.now() - nodeStart}ms)`);
+        if (debug) {
+          console.log(`[Server:Node] write(${buf.length} bytes) (+${Date.now() - nodeStart}ms)`);
+        }
       }
       return true; // No backpressure — buffering in memory.
     } as typeof res.write;
@@ -248,9 +255,11 @@ function handleViaNode(
       // Read res.statusCode as the authoritative source.
       const finalStatusCode = res.statusCode || statusCode;
 
-      console.log(
-        `[Server:Node] end() status=${finalStatusCode}, body=${body.length} bytes, content-type=${ct || 'none'} (+${Date.now() - nodeStart}ms)`,
-      );
+      if (debug) {
+        console.log(
+          `[Server:Node] end() status=${finalStatusCode}, body=${body.length} bytes, content-type=${ct || 'none'} (+${Date.now() - nodeStart}ms)`,
+        );
+      }
 
       const result: APIGatewayProxyResultV2 = {
         statusCode: finalStatusCode,
@@ -289,24 +298,24 @@ function handleViaNode(
       const buf = event.isBase64Encoded
         ? Buffer.from(event.body, 'base64')
         : Buffer.from(event.body, 'utf-8');
-      console.log(`[Server:Node] Pushing body (${buf.length} bytes)`);
+      if (debug) console.log(`[Server:Node] Pushing body (${buf.length} bytes)`);
       req.push(buf);
       req.push(null);
     } else {
       req.push(null);
     }
 
-    console.log(`[Server:Node] Calling handler function...`);
+    if (debug) console.log(`[Server:Node] Calling handler function...`);
     const maybePromise = handler(req, res);
     if (maybePromise && typeof (maybePromise as Promise<unknown>).then === 'function') {
-      console.log(`[Server:Node] Handler returned a promise`);
+      if (debug) console.log(`[Server:Node] Handler returned a promise`);
       (maybePromise as Promise<unknown>).catch((err) => {
         console.error(
           `[Server:Node] Handler promise rejected: ${err?.message || err} (+${Date.now() - nodeStart}ms)`,
         );
         reject(err);
       });
-    } else {
+    } else if (debug) {
       console.log(`[Server:Node] Handler returned synchronously`);
     }
   });
@@ -331,7 +340,9 @@ function toBuffer(chunk: unknown): Buffer {
 }
 
 function shouldBase64Encode(contentType?: string): boolean {
-  if (!contentType) return false;
+  // No content type — assume binary; base64 is always safe, while utf-8
+  // decoding would corrupt binary payloads.
+  if (!contentType) return true;
   const textTypes = [
     'text/',
     'application/json',

@@ -120,6 +120,7 @@ export class TerraformRunner {
 
   async init(backend?: TerraformBackendConfig, env?: NodeJS.ProcessEnv): Promise<void> {
     const args = ['init'];
+    let runEnv = env;
 
     if (backend) {
       args.push(`-backend-config=bucket=${backend.bucket}`);
@@ -130,11 +131,16 @@ export class TerraformRunner {
       args.push('-backend-config=skip_credentials_validation=true');
       args.push('-backend-config=skip_metadata_api_check=true');
       args.push('-backend-config=skip_requesting_account_id=true');
-      args.push(`-backend-config=access_key=${backend.accessKey}`);
-      args.push(`-backend-config=secret_key=${backend.secretKey}`);
+      // Credentials are passed via environment so they never appear in the
+      // process argument list (visible to other users via `ps`).
+      runEnv = {
+        ...env,
+        AWS_ACCESS_KEY_ID: backend.accessKey,
+        AWS_SECRET_ACCESS_KEY: backend.secretKey,
+      };
     }
 
-    await this.run(args, { env });
+    await this.run(args, { env: runEnv });
   }
 
   async apply(options: TerraformApplyOptions = {}): Promise<void> {
@@ -142,6 +148,11 @@ export class TerraformRunner {
 
     if (options.autoApprove) {
       args.push('-auto-approve');
+    } else if (!process.stdin.isTTY) {
+      throw new Error(
+        'terraform apply requires interactive approval, but stdin is not a TTY. ' +
+          'Re-run with --auto-approve (or NYC_AUTO_APPROVE=1 / config "autoApprove": true).',
+      );
     }
 
     if (options.refresh === false) {
@@ -207,14 +218,6 @@ export class TerraformRunner {
     }
   }
 
-  async moveState(from: string, to: string, env?: NodeJS.ProcessEnv): Promise<void> {
-    if (from === to) {
-      return;
-    }
-
-    await this.run(['state', 'mv', from, to], { env });
-  }
-
   private async run(
     args: string[],
     options: TerraformRunOptions = {},
@@ -226,10 +229,12 @@ export class TerraformRunner {
     const MAX_CAPTURED_OUTPUT = 256 * 1024;
 
     return new Promise((resolve, reject) => {
+      // When output is streamed to the user (interactive mode), inherit stdin so
+      // terraform prompts (e.g. apply approval) can actually receive input.
       const child = spawn(this.terraformBin, args, {
         cwd: this.terraformDir,
         env: { ...process.env, ...options.env },
-        stdio: 'pipe',
+        stdio: captureOutput ? 'pipe' : ['inherit', 'pipe', 'pipe'],
       });
 
       let stdout = '';

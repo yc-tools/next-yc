@@ -193,7 +193,7 @@ resource "yandex_resourcemanager_folder_iam_member" "ydb_editor_functions" {
 
 # Server function (SSR/API)
 resource "yandex_function" "server" {
-  count = local.manifest.capabilities.rendering.needsServer ? 1 : 0
+  count = local.manifest.capabilities.needsServer ? 1 : 0
 
   name               = "${local.prefix}-server-function"
   description        = "Next.js SSR and API handler"
@@ -246,7 +246,7 @@ resource "yandex_function" "server" {
 
 # Image optimization function
 resource "yandex_function" "image" {
-  count = local.manifest.capabilities.assets.needsImage ? 1 : 0
+  count = local.manifest.capabilities.needsImage ? 1 : 0
 
   name               = "${local.prefix}-image-function"
   description        = "Next.js image optimization handler"
@@ -287,11 +287,11 @@ locals {
   openapi_spec = templatefile("${path.module}/templates/openapi.yaml.tpl", {
     api_name           = "${local.prefix}-api"
     assets_bucket      = local.assets_bucket
-    server_function_id = local.manifest.capabilities.rendering.needsServer ? yandex_function.server[0].id : ""
-    image_function_id  = local.manifest.capabilities.assets.needsImage ? yandex_function.image[0].id : ""
+    server_function_id = local.manifest.capabilities.needsServer ? yandex_function.server[0].id : ""
+    image_function_id  = local.manifest.capabilities.needsImage ? yandex_function.image[0].id : ""
     service_account_id = yandex_iam_service_account.functions.id
-    has_server         = local.manifest.capabilities.rendering.needsServer
-    has_image          = local.manifest.capabilities.assets.needsImage
+    has_server         = local.manifest.capabilities.needsServer
+    has_image          = local.manifest.capabilities.needsImage
   })
 }
 
@@ -313,10 +313,6 @@ resource "yandex_api_gateway" "main" {
       fqdn           = var.domain_name
       certificate_id = local.certificate_id
     }
-  }
-
-  lifecycle {
-    ignore_changes = [spec]
   }
 
   labels = local.common_labels

@@ -32,7 +32,7 @@ export const ArtifactSchema = z.object({
   localDir: z.string().optional(),
   bucketKeyPrefix: z.string().optional(),
   entry: z.string().optional(),
-  env: z.record(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
 });
 
 export const RoutingSchema = z.object({
@@ -65,7 +65,7 @@ export const ISRConfigSchema = z.object({
 export const DeployManifestSchema = z.object({
   schemaVersion: z.literal('1.0'),
   buildId: z.string(),
-  timestamp: z.string().datetime(),
+  timestamp: z.iso.datetime(),
   nextVersion: z.string(),
   projectName: z.string(),
   capabilities: CapabilitiesSchema,
@@ -78,7 +78,7 @@ export const DeployManifestSchema = z.object({
   isr: ISRConfigSchema.optional(),
   environment: z
     .object({
-      variables: z.record(z.string()),
+      variables: z.record(z.string(), z.string()),
       secrets: z.array(
         z.object({
           name: z.string(),

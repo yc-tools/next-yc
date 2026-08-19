@@ -1,7 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
 import { createRequire } from 'module';
 import archiver from 'archiver';
 import chalk from 'chalk';
@@ -9,7 +8,6 @@ import ora from 'ora';
 import { Analyzer } from '../analyze/index.js';
 import { createDefaultManifest, DeployManifest } from '../manifest/schema.js';
 
-const execAsync = promisify(exec);
 const require = createRequire(import.meta.url);
 
 export interface BuildOptions {
@@ -60,7 +58,7 @@ export class Builder {
 
       if (capabilities.needsServer) {
         spinner.start('Packaging server function...');
-        await this.packageServer(projectPath, artifactsDir, capabilities);
+        await this.packageServer(projectPath, artifactsDir);
         spinner.succeed('Server function packaged');
       }
 
@@ -73,10 +71,6 @@ export class Builder {
       spinner.start('Copying static assets...');
       await this.copyStaticAssets(projectPath, artifactsDir, buildId);
       spinner.succeed('Static assets copied');
-
-      spinner.start('Generating API Gateway spec...');
-      await this.generateOpenAPISpec(outputDir, capabilities);
-      spinner.succeed('API Gateway spec generated');
 
       spinner.start('Creating deployment manifest...');
       const manifest = await this.createManifest(buildId, projectName, capabilities, outputDir);
@@ -108,37 +102,56 @@ export class Builder {
       throw new Error('No build script found in package.json. Expected "build" script.');
     }
 
-    const { stderr } = await execAsync('npm run build', {
-      cwd: projectPath,
-      env: { ...process.env, NODE_ENV: 'production' },
-    });
+    const packageManager = await this.detectPackageManager(projectPath);
 
-    if (stderr && !stderr.toLowerCase().includes('warn')) {
-      console.error(chalk.red('Build output:'), stderr);
-    }
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(packageManager, ['run', 'build'], {
+        cwd: projectPath,
+        env: { ...process.env, NODE_ENV: 'production' },
+        stdio: 'inherit',
+      });
+
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`"${packageManager} run build" failed with exit code ${code}`));
+        }
+      });
+    });
   }
 
-  private async packageServer(
-    projectPath: string,
-    artifactsDir: string,
-    _capabilities: DeployManifest['capabilities'],
-  ): Promise<void> {
+  private async detectPackageManager(projectPath: string): Promise<string> {
+    if (await fs.pathExists(path.join(projectPath, 'pnpm-lock.yaml'))) {
+      return 'pnpm';
+    }
+    if (await fs.pathExists(path.join(projectPath, 'yarn.lock'))) {
+      return 'yarn';
+    }
+    return 'npm';
+  }
+
+  private async packageServer(projectPath: string, artifactsDir: string): Promise<void> {
     const serverDir = path.join(artifactsDir, 'server');
     await fs.ensureDir(serverDir);
 
     const runtimeEntryPath = require.resolve('@yc-tools/next-yc-runtime');
 
-    const tempEntryPath = path.join(serverDir, '_entry.mjs');
+    // CommonJS entry to match the esbuild CJS bundle format, so __dirname is
+    // valid both in the source and in the emitted bundle.
+    // NOTE: 'index.js' is deliberately NOT a server module candidate — the
+    // bundle itself is emitted as index.js and would import itself.
+    const tempEntryPath = path.join(serverDir, '_entry.cjs');
     const handlerCode = `
-import { createServerHandler } from '${runtimeEntryPath.replace(/\\/g, '/')}';
+const { createServerHandler } = require('${runtimeEntryPath.replace(/\\/g, '/')}');
 
-export const handler = createServerHandler({
+module.exports.handler = createServerHandler({
   dir: __dirname,
   trustProxy: true,
   serverModuleCandidates: [
     'server.js',
     'server.mjs',
-    'index.js',
   ],
 });
 `;
@@ -176,11 +189,12 @@ export const handler = createServerHandler({
 
     const runtimeEntryPath = require.resolve('@yc-tools/next-yc-runtime');
 
-    const tempEntryPath = path.join(imageDir, '_entry.mjs');
+    // CommonJS entry to match the esbuild CJS bundle format.
+    const tempEntryPath = path.join(imageDir, '_entry.cjs');
     const handlerCode = `
-import { createImageHandler } from '${runtimeEntryPath.replace(/\\/g, '/')}';
+const { createImageHandler } = require('${runtimeEntryPath.replace(/\\/g, '/')}');
 
-export const handler = createImageHandler({
+module.exports.handler = createImageHandler({
   cacheBucket: process.env.ASSETS_BUCKET,
   sourcesBucket: process.env.ASSETS_BUCKET,
 });
@@ -263,122 +277,6 @@ export const handler = createImageHandler({
     await fs.writeFile(path.join(assetsDir, 'BUILD_ID'), buildId);
   }
 
-  private async generateOpenAPISpec(
-    outputDir: string,
-    capabilities: DeployManifest['capabilities'],
-  ): Promise<void> {
-    const spec: Record<string, unknown> = {
-      openapi: '3.0.0',
-      info: {
-        title: 'Next.js App API Gateway',
-        version: '1.0.0',
-      },
-      paths: {
-        '/_next/static/{proxy+}': {
-          get: {
-            'x-yc-apigateway-integration': {
-              type: 'object_storage',
-              bucket: '${var.assets_bucket}',
-              object: '_next/static/{proxy}',
-              service_account_id: '${var.service_account_id}',
-            },
-            parameters: [
-              {
-                name: 'proxy',
-                in: 'path',
-                required: true,
-                schema: { type: 'string' },
-              },
-            ],
-          },
-        },
-        '/favicon.ico': {
-          get: {
-            'x-yc-apigateway-integration': {
-              type: 'object_storage',
-              bucket: '${var.assets_bucket}',
-              object: 'public/favicon.ico',
-              service_account_id: '${var.service_account_id}',
-            },
-          },
-        },
-        '/robots.txt': {
-          get: {
-            'x-yc-apigateway-integration': {
-              type: 'object_storage',
-              bucket: '${var.assets_bucket}',
-              object: 'public/robots.txt',
-              service_account_id: '${var.service_account_id}',
-            },
-          },
-        },
-      },
-    };
-
-    const paths = spec.paths as Record<string, unknown>;
-
-    if (capabilities.needsImage) {
-      paths['/_next/image'] = {
-        get: {
-          'x-yc-apigateway-integration': {
-            type: 'cloud_functions',
-            function_id: '${var.image_function_id}',
-            service_account_id: '${var.service_account_id}',
-            payload_format_version: '2.0',
-          },
-          parameters: [
-            { name: 'url', in: 'query', required: true, schema: { type: 'string' } },
-            { name: 'w', in: 'query', required: false, schema: { type: 'integer' } },
-            { name: 'q', in: 'query', required: false, schema: { type: 'integer' } },
-          ],
-        },
-      };
-    }
-
-    if (capabilities.needsServer) {
-      paths['/api/{proxy+}'] = {
-        any: {
-          'x-yc-apigateway-integration': {
-            type: 'cloud_functions',
-            function_id: '${var.server_function_id}',
-            service_account_id: '${var.service_account_id}',
-            payload_format_version: '2.0',
-          },
-          parameters: [
-            { name: 'proxy', in: 'path', required: false, schema: { type: 'string' } },
-          ],
-        },
-      };
-
-      paths['/{proxy+}'] = {
-        any: {
-          'x-yc-apigateway-integration': {
-            type: 'cloud_functions',
-            function_id: '${var.server_function_id}',
-            service_account_id: '${var.service_account_id}',
-            payload_format_version: '2.0',
-          },
-          parameters: [
-            { name: 'proxy', in: 'path', required: false, schema: { type: 'string' } },
-          ],
-        },
-      };
-
-      paths['/'] = {
-        any: {
-          'x-yc-apigateway-integration': {
-            type: 'cloud_functions',
-            function_id: '${var.server_function_id}',
-            service_account_id: '${var.service_account_id}',
-            payload_format_version: '2.0',
-          },
-        },
-      };
-    }
-
-    await fs.writeJson(path.join(outputDir, 'openapi-template.json'), spec, { spaces: 2 });
-  }
-
   private async createManifest(
     buildId: string,
     projectName: string,
@@ -386,7 +284,6 @@ export const handler = createImageHandler({
     outputDir: string,
   ): Promise<DeployManifest> {
     const manifest = createDefaultManifest(buildId, projectName, capabilities);
-    manifest.routing.openapiTemplatePath = './openapi-template.json';
 
     const manifestPath = path.join(outputDir, 'deploy.manifest.json');
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
@@ -427,11 +324,19 @@ export const handler = createImageHandler({
       });
 
       output.on('close', resolve);
+      output.on('error', reject);
       archive.on('error', reject);
+      archive.on('warning', (err) => {
+        if (err.code === 'ENOENT') {
+          console.warn(chalk.yellow(`  Archive warning: ${err.message}`));
+        } else {
+          reject(err);
+        }
+      });
 
       archive.pipe(output);
       archive.directory(sourceDir, false);
-      void archive.finalize();
+      archive.finalize().catch(reject);
     });
   }
 }

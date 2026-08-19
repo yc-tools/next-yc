@@ -36,7 +36,6 @@ export const ArtifactSchema = z.object({
 });
 
 export const RoutingSchema = z.object({
-  openapiTemplatePath: z.string().optional(),
   openapiInline: z.string().optional(),
   payloadFormat: z.enum(['1.0', '2.0']).default('2.0'),
   staticPaths: z.array(z.string()).default([]),

@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import fs from 'fs-extra';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { Analyzer } from './analyze/index.js';
 import { Builder } from './build/index.js';
 import { ManifestGenerator } from './manifest/index.js';
@@ -27,10 +28,14 @@ import {
 
 const program = new Command();
 
+const cliPackageJson = fs.readJsonSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json'),
+) as { version: string };
+
 program
   .name('next-yc')
   .description('CLI tool for deploying Next.js applications to Yandex Cloud')
-  .version('1.0.0');
+  .version(cliPackageJson.version);
 
 function cliOptionValue<T>(command: Command, name: string, value: T): T | undefined {
   return command.getOptionValueSource(name) === 'cli' ? value : undefined;
@@ -425,6 +430,19 @@ program
         'https://storage.yandexcloud.net',
       ) as string;
 
+      const storageAccessKey = firstDefined(
+        getEnvString(env, 'NYC_STORAGE_ACCESS_KEY'),
+        getConfigString(mergedConfig, 'storageAccessKey'),
+        getEnvString(env, 'YC_ACCESS_KEY'),
+        getEnvString(env, 'AWS_ACCESS_KEY_ID'),
+      );
+      const storageSecretKey = firstDefined(
+        getEnvString(env, 'NYC_STORAGE_SECRET_KEY'),
+        getConfigString(mergedConfig, 'storageSecretKey'),
+        getEnvString(env, 'YC_SECRET_KEY'),
+        getEnvString(env, 'AWS_SECRET_ACCESS_KEY'),
+      );
+
       const terraformDir = await prepareTerraformProject();
 
       try {
@@ -548,6 +566,8 @@ program
           assetsBucket,
           region: deployRegion,
           endpoint: deployEndpoint,
+          accessKeyId: storageAccessKey,
+          secretAccessKey: storageSecretKey,
           verbose: options.verbose,
         });
 
@@ -733,6 +753,16 @@ program
         assetsBucket: options.bucket,
         region: options.region,
         endpoint: options.endpoint,
+        accessKeyId: firstDefined(
+          getEnvString(process.env, 'NYC_STORAGE_ACCESS_KEY'),
+          getEnvString(process.env, 'YC_ACCESS_KEY'),
+          getEnvString(process.env, 'AWS_ACCESS_KEY_ID'),
+        ),
+        secretAccessKey: firstDefined(
+          getEnvString(process.env, 'NYC_STORAGE_SECRET_KEY'),
+          getEnvString(process.env, 'YC_SECRET_KEY'),
+          getEnvString(process.env, 'AWS_SECRET_ACCESS_KEY'),
+        ),
         verbose: options.verbose,
         dryRun: options.dryRun,
       });
@@ -810,8 +840,9 @@ program
     }
   });
 
-program.parse(process.argv);
-
 if (!process.argv.slice(2).length) {
   program.outputHelp();
+  process.exit(1);
 }
+
+program.parse(process.argv);

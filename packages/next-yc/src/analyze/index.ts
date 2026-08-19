@@ -13,6 +13,13 @@ export interface AnalyzeOptions {
 
 export type AnalyzeCapabilities = Capabilities;
 
+interface SourcePatternFlags {
+  onDemand: boolean;
+  tags: boolean;
+  serverActions: boolean;
+  needsImage: boolean;
+}
+
 export class Analyzer {
   private readonly compat: CompatibilityChecker;
 
@@ -31,10 +38,11 @@ export class Analyzer {
     const appRouter = await this.detectAppRouter(projectPath);
     const pagesRouter = await this.detectPagesRouter(projectPath);
     const apiRoutes = await this.detectAPIRoutes(projectPath);
-    const isr = await this.detectISR(projectPath);
+    const sourcePatterns = await this.detectSourcePatterns(projectPath);
+    const isr = await this.detectISR(projectPath, sourcePatterns);
     const middleware = await this.detectMiddleware(projectPath);
-    const serverActions = await this.detectServerActions(projectPath);
-    const needsImage = await this.detectImageOptimization(projectPath);
+    const serverActions = sourcePatterns.serverActions;
+    const needsImage = sourcePatterns.needsImage;
 
     const needsServer = appRouter || apiRoutes || isr.enabled || serverActions;
 
@@ -65,12 +73,14 @@ export class Analyzer {
     });
 
     if (!compatCheck.compatible) {
-      if (verbose) {
-        for (const error of compatCheck.errors) {
-          console.error(chalk.red(`  ${error}`));
-        }
+      for (const error of compatCheck.errors) {
+        console.error(chalk.red(`  ${error}`));
       }
-      throw new Error('Project has incompatible features for YC Next.js deployment');
+      throw new Error(
+        `Project has incompatible features for YC Next.js deployment:\n${compatCheck.errors
+          .map((error) => `  - ${error}`)
+          .join('\n')}`,
+      );
     }
 
     if (compatCheck.warnings.length > 0) {
@@ -149,12 +159,12 @@ export class Analyzer {
     return false;
   }
 
-  private async detectISR(projectPath: string): Promise<Capabilities['isr']> {
+  private async detectISR(
+    projectPath: string,
+    sourcePatterns: SourcePatternFlags,
+  ): Promise<Capabilities['isr']> {
     const buildDir = path.join(projectPath, '.next');
     let enabled = false;
-    let onDemand = false;
-    let tags = false;
-    const paths = false;
 
     // Check prerender-manifest.json for ISR pages
     const prerenderManifest = path.join(buildDir, 'prerender-manifest.json');
@@ -169,19 +179,12 @@ export class Analyzer {
       }
     }
 
-    // Check source for on-demand revalidation
-    onDemand = await this.detectPatternUsage(projectPath, [
-      'revalidatePath(',
-      'revalidateTag(',
-    ]);
-
-    tags = await this.detectPatternUsage(projectPath, ['revalidateTag(']);
-
+    const { onDemand, tags } = sourcePatterns;
     if (onDemand) {
       enabled = true;
     }
 
-    return { enabled, onDemand, tags, paths };
+    return { enabled, onDemand, tags, paths: false };
   }
 
   private async detectMiddleware(projectPath: string): Promise<boolean> {
@@ -201,35 +204,43 @@ export class Analyzer {
     return false;
   }
 
-  private async detectServerActions(projectPath: string): Promise<boolean> {
-    return this.detectPatternUsage(projectPath, ["'use server'", '"use server"']);
-  }
+  private async detectSourcePatterns(projectPath: string): Promise<SourcePatternFlags> {
+    const patternGroups: Record<keyof SourcePatternFlags, string[]> = {
+      onDemand: ['revalidatePath(', 'revalidateTag('],
+      tags: ['revalidateTag('],
+      serverActions: ["'use server'", '"use server"'],
+      needsImage: ['next/image', '<Image ', '<Image\n'],
+    };
 
-  private async detectImageOptimization(projectPath: string): Promise<boolean> {
-    return this.detectPatternUsage(projectPath, [
-      'next/image',
-      '<Image ',
-      '<Image\n',
-    ]);
-  }
+    const flags: SourcePatternFlags = {
+      onDemand: false,
+      tags: false,
+      serverActions: false,
+      needsImage: false,
+    };
 
-  private async detectPatternUsage(projectPath: string, patterns: string[]): Promise<boolean> {
     const files = await glob('**/*.{ts,tsx,js,jsx,mjs}', {
       cwd: projectPath,
       ignore: ['node_modules/**', '.next/**', 'dist/**', 'out/**'],
       nodir: true,
     });
 
+    const keys = Object.keys(patternGroups) as Array<keyof SourcePatternFlags>;
+
     for (const file of files) {
+      if (keys.every((key) => flags[key])) {
+        break;
+      }
+
       const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-      for (const pattern of patterns) {
-        if (content.includes(pattern)) {
-          return true;
+      for (const key of keys) {
+        if (!flags[key] && patternGroups[key].some((pattern) => content.includes(pattern))) {
+          flags[key] = true;
         }
       }
     }
 
-    return false;
+    return flags;
   }
 
   private printCapabilities(capabilities: Capabilities): void {

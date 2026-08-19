@@ -41,7 +41,6 @@ export class ManifestGenerator {
     const buildId = await this.detectBuildId(buildDir);
 
     const manifest = createDefaultManifest(buildId, projectName, capabilities);
-    manifest.routing.openapiTemplatePath = './openapi-template.json';
 
     const validated = validateManifest(manifest);
     await fs.writeJson(outputPath, validated, { spaces: 2 });

@@ -3,20 +3,23 @@ import path from 'path';
 import yaml from 'js-yaml';
 import { fileURLToPath } from 'url';
 import semver from 'semver';
+import { z } from 'zod';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-interface VersionEntry {
-  range: string;
-  label: string;
-  features: Record<string, string>;
-}
+const VersionEntrySchema = z.object({
+  range: z.string(),
+  label: z.string(),
+  features: z.record(z.string(), z.string()),
+});
 
-interface CompatMatrix {
-  versions: VersionEntry[];
-  yandexCloudLimitations?: Record<string, string>;
-  runtimeNotes?: string[];
-}
+const CompatMatrixSchema = z.object({
+  versions: z.array(VersionEntrySchema),
+  yandexCloudLimitations: z.record(z.string(), z.string()).optional(),
+  runtimeNotes: z.array(z.string()).optional(),
+});
+
+type CompatMatrix = z.infer<typeof CompatMatrixSchema>;
 
 export interface CompatCheckResult {
   compatible: boolean;
@@ -30,7 +33,15 @@ export class CompatibilityChecker {
   constructor() {
     const filePath = path.join(__dirname, 'compat.yml');
     const content = fs.readFileSync(filePath, 'utf-8');
-    this.matrix = yaml.load(content) as CompatMatrix;
+    const parsed = CompatMatrixSchema.safeParse(yaml.load(content));
+    if (!parsed.success) {
+      throw new Error(
+        `Invalid compatibility matrix at ${filePath}: ${parsed.error.issues
+          .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
+          .join('; ')}`,
+      );
+    }
+    this.matrix = parsed.data;
   }
 
   isVersionSupported(version: string): boolean {

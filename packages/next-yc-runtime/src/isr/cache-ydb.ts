@@ -348,7 +348,6 @@ export class ISRCacheYDB implements ISRCache {
       });
 
       const resultSet = result.resultSets[0];
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       if (resultSet && resultSet.rows && resultSet.rows.length > 0) {
         const row = resultSet.rows[0] as Record<string, unknown>;
         return JSON.parse(row.value as string);

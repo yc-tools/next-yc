@@ -244,7 +244,6 @@ async function fetchSourceImage(
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function processImage(
   input: Buffer,
   options: {
